@@ -28,7 +28,7 @@ __global__ void Tiled3GaussianBlur_Kernel(float* src, float* dst, int64_t width,
     __syncthreads();
 
     //horizontalBlur on tampon restraint into rectangle [8 - 56][0 - 64] -> 12 pass per thread
-    float tot[3] = {0.f, 0.f, 0.f};
+    float tot[3];
     float out[3][4] = {{0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}, {0.f, 0.f, 0.f, 0.f}};
 
     #pragma unroll
