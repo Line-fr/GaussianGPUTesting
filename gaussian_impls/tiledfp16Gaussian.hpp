@@ -7,8 +7,6 @@ __global__ void loadfp16GaussianKernel(half2* gaussiankernel, half2* gaussianker
     gaussiankernel[x].y = gaussiankernel[x].x;
     if (x == 0){
         float acc = 0.;
-        gaussiankernel_integral[0].x = 0.f;
-        gaussiankernel_integral[0].y = 0.f;
         for (int i = 0; i <= 2*gaussiansize+1; i++){
             gaussiankernel_integral[i].x = acc;
             gaussiankernel_integral[i].y = acc;

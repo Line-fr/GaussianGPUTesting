@@ -1,5 +1,11 @@
 #pragma once
 
+__global__ void loadGaussianKernel(float* gaussiankernel, int gaussiansize, double sigma){
+    const int x = threadIdx.x + blockIdx.x * blockDim.x;
+    if (x > 2*gaussiansize) return;
+    gaussiankernel[x] = expf(-(gaussiansize-x)*(gaussiansize-x)/(2*sigma*sigma))/(sqrt(TAU*sigma*sigma));
+}
+
 //transpose the result at the end
 __launch_bounds__(256)
 __global__ void Classical_horizontalBlur_Kernel(float* dst, float* src, int w, int h, float* gaussiankernel, int gaussiansize){
