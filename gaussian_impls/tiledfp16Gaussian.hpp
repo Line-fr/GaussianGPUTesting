@@ -1,14 +1,24 @@
 #pragma once
 
-__global__ void loadfp16GaussianKernel(half2* gaussiankernel, int gaussiansize, double sigma){
+__global__ void loadfp16GaussianKernel(half2* gaussiankernel, half2* gaussiankernel_integral, int gaussiansize, double sigma){
     const int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x > 2*gaussiansize) return;
     gaussiankernel[x].x = expf(-(gaussiansize-x)*(gaussiansize-x)/(2*sigma*sigma))/(sqrt(TAU*sigma*sigma));
     gaussiankernel[x].y = gaussiankernel[x].x;
+    if (x == 0){
+        float acc = 0.;
+        gaussiankernel_integral[0].x = 0.f;
+        gaussiankernel_integral[0].y = 0.f;
+        for (int i = 0; i <= 2*gaussiansize+1; i++){
+            gaussiankernel_integral[i].x = acc;
+            gaussiankernel_integral[i].y = acc;
+            acc += expf(-(gaussiansize-i)*(gaussiansize-i)/(2*sigma*sigma))/(sqrt(TAU*sigma*sigma));
+        }
+    }
 }
 
 __launch_bounds__(256)
-__global__ void Tiledfp16GaussianBlur_Kernel(float* src, float* dst, int64_t width, int64_t height, half2* gaussiankernel){
+__global__ void Tiledfp16GaussianBlur_Kernel(float* src, float* dst, int64_t width, int64_t height, half2* gaussiankernel, half2* gaussiankernel_integral){
     int64_t originalBl_X = blockIdx.x;
     //let's determine which scale our block is in and adjust our input parameters accordingly
 
@@ -55,9 +65,7 @@ __global__ void Tiledfp16GaussianBlur_Kernel(float* src, float* dst, int64_t wid
         if (beg != 0) tot[region_x].y = gaussiankernel[beg-1].y;
         if (end2+(x-7+region_x*16) == width) tot[region_x].x = gaussiankernel[end2].x;
 
-        for (int i = beg; i < end2; i++){
-            tot[region_x] += gaussiankernel[i];
-        }
+        tot[region_x] += gaussiankernel_integral[end2] - gaussiankernel_integral[beg];
 
         #pragma unroll
         for (int region_y = 0; region_y < 3; region_y++){
@@ -81,15 +89,10 @@ __global__ void Tiledfp16GaussianBlur_Kernel(float* src, float* dst, int64_t wid
     //verticalBlur on tampon restraint into rectangle [8 - 40][8 - 40] -> 4 pass per thread
     #pragma unroll
     for (int region_y = 0; region_y < 2; region_y++){
-        
-        tot[region_y].x = 0.f;
-        tot[region_y].y = 0.f;
-        //border handling precompute
-        for (int i = 0; i < 17; i++){
-            if (tampon_base_y+thy+i+region_y*16 >= 0 && tampon_base_y+thy+i+region_y*16 < height) {
-                tot[region_y] += gaussiankernel[i];
-            }
-        }
+
+        const int beg = max((long)0, y-8+region_y*16)-(y-8+region_y*16);
+        const int end2 = min(height, y+9+region_y*16)-(y-8+region_y*16);
+        tot[region_y] = gaussiankernel_integral[end2] - gaussiankernel_integral[beg];
 
         #pragma unroll
         for (int region_x = 0; region_x < 2; region_x++){
@@ -132,8 +135,8 @@ struct Tiledfp16Gaussian{
         const int windowsize = 8;
         hipMalloc(&temp, sizeof(float)*plane.width*plane.height);
         hipMalloc(&temp2, sizeof(float)*plane.width*plane.height);
-        hipMalloc(&gaussiankernel_d, sizeof(half2)*(2*windowsize+1));
-        loadfp16GaussianKernel<<<dim3(1), dim3(2*windowsize+1)>>>(gaussiankernel_d, windowsize, sigma);
+        hipMalloc(&gaussiankernel_d, sizeof(half2)*(4*windowsize+3));
+        loadfp16GaussianKernel<<<dim3(1), dim3(2*windowsize+1)>>>(gaussiankernel_d, gaussiankernel_d+2*windowsize+1, windowsize, sigma);
         float* temps[2] = {temp, temp2};
         hipMemcpyDtoD(temps[oscillate], plane.plane_d, sizeof(float)*plane.width*plane.height);
         hipDeviceSynchronize();
@@ -149,6 +152,7 @@ struct Tiledfp16Gaussian{
         hipDeviceSynchronize();
     }
     void run(){
+        const int windowsize = 8;
         float* temps[2] = {temp, temp2};
         float* source = temps[oscillate];
         float* dest = temps[oscillate^1];
@@ -158,7 +162,7 @@ struct Tiledfp16Gaussian{
         int64_t bl_x = (plane.width-1)/(4*th_x)+1;
         int64_t bl_y = (plane.height-1)/(2*th_y)+1;
 
-        Tiledfp16GaussianBlur_Kernel<<<dim3(bl_x*bl_y), dim3(th_x, th_y)>>>(source, dest, plane.width, plane.height, gaussiankernel_d);
+        Tiledfp16GaussianBlur_Kernel<<<dim3(bl_x*bl_y), dim3(th_x, th_y)>>>(source, dest, plane.width, plane.height, gaussiankernel_d, gaussiankernel_d+2*windowsize+1);
 
         oscillate ^= 1; //we moved the result in the other place
     }
